@@ -9,10 +9,12 @@ import joblib
 import matplotlib
 import pandas as pd
 from catboost import CatBoostRegressor
+from sklearn.base import clone
 from sklearn.metrics import mean_squared_error, r2_score
-from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
+from sklearn.model_selection import GridSearchCV
 
 from rainfall_prediction.config import (
+    BASELINE_MODEL_COMPARISON_PATH,
     BEST_MODEL_INFO_PATH,
     BEST_MODEL_PATH,
     DATE_COLUMN,
@@ -32,6 +34,7 @@ bootstrap_openmp_runtime()
 
 @dataclass
 class ModelingArtifacts:
+    baseline_comparison: pd.DataFrame
     comparison: pd.DataFrame
     best_model_name: str
     best_model: Any
@@ -45,15 +48,14 @@ def split_train_test(df: pd.DataFrame, test_start_date: str) -> tuple[pd.DataFra
     return train, test
 
 
-def _build_search_spaces() -> dict[str, tuple[Any, dict[str, list[Any]]]]:
+def _build_model_specs() -> dict[str, tuple[Any, dict[str, list[Any]]]]:
     spaces: dict[str, tuple[Any, dict[str, list[Any]]]] = {
         "catboost": (
             CatBoostRegressor(random_state=42, verbose=0),
             {
                 "iterations": [300, 500],
-                "learning_rate": [0.03, 0.1],
-                "depth": [4, 6, 8],
-                "l2_leaf_reg": [1, 3, 5],
+                "learning_rate": [0.01, 0.1],
+                "depth": [4, 6],
             },
         ),
     }
@@ -66,13 +68,13 @@ def _build_search_spaces() -> dict[str, tuple[Any, dict[str, list[Any]]]]:
             XGBRegressor(
                 objective="reg:squarederror",
                 random_state=42,
-                n_jobs=-1,
+                n_jobs=1,
             ),
             {
-                "n_estimators": [200, 400],
-                "learning_rate": [0.03, 0.1],
+                "n_estimators": [100, 200],
+                "learning_rate": [0.01, 0.1],
                 "max_depth": [3, 5],
-                "subsample": [0.8, 1.0],
+                "subsample": [0.7, 1.0],
                 "colsample_bytree": [0.8, 1.0],
             },
         )
@@ -83,13 +85,13 @@ def _build_search_spaces() -> dict[str, tuple[Any, dict[str, list[Any]]]]:
         from lightgbm import LGBMRegressor
 
         spaces["lightgbm"] = (
-            LGBMRegressor(random_state=42, verbosity=-1),
+            LGBMRegressor(random_state=42, verbosity=-1, n_jobs=1),
             {
-                "n_estimators": [200, 400],
-                "learning_rate": [0.03, 0.1],
-                "num_leaves": [15, 31],
-                "max_depth": [-1, 5],
-                "subsample": [0.8, 1.0],
+                "n_estimators": [100, 200],
+                "learning_rate": [0.01, 0.1],
+                "num_leaves": [20, 31],
+                "max_depth": [3, 5],
+                "subsample": [0.7, 1.0],
             },
         )
     except Exception as exc:
@@ -108,6 +110,7 @@ def _build_search_spaces() -> dict[str, tuple[Any, dict[str, list[Any]]]]:
 def train_and_evaluate_models(
     df: pd.DataFrame,
     test_start_date: str,
+    baseline_reports_path: Path = BASELINE_MODEL_COMPARISON_PATH,
     reports_path: Path = MODEL_COMPARISON_PATH,
 ) -> ModelingArtifacts:
     train_df, test_df = split_train_test(df, test_start_date=test_start_date)
@@ -116,13 +119,24 @@ def train_and_evaluate_models(
     x_test = test_df[FEATURE_COLUMNS]
     y_test = test_df[TARGET_COLUMN]
 
-    cv = TimeSeriesSplit(n_splits=3)
-    results: list[dict[str, Any]] = []
+    baseline_results: list[dict[str, Any]] = []
+    tuned_results: list[dict[str, Any]] = []
     fitted_models: dict[str, Any] = {}
-    search_spaces, unavailable_models = _build_search_spaces()
+    baseline_predictions: dict[str, pd.Series] = {}
+    tuned_predictions: dict[str, pd.Series] = {}
+    model_specs, unavailable_models = _build_model_specs()
 
     for model_name, error_message in unavailable_models.items():
-        results.append(
+        baseline_results.append(
+            {
+                "model": model_name,
+                "status": "unavailable",
+                "mse": None,
+                "r2": None,
+                "best_params": error_message,
+            }
+        )
+        tuned_results.append(
             {
                 "model": model_name,
                 "status": "unavailable",
@@ -132,11 +146,25 @@ def train_and_evaluate_models(
             }
         )
 
-    for model_name, (estimator, param_grid) in search_spaces.items():
+    for model_name, (estimator, param_grid) in model_specs.items():
+        baseline_model = clone(estimator)
+        baseline_model.fit(x_train, y_train)
+        baseline_pred = pd.Series(baseline_model.predict(x_test))
+        baseline_results.append(
+            {
+                "model": model_name,
+                "status": "trained",
+                "mse": mean_squared_error(y_test, baseline_pred),
+                "r2": r2_score(y_test, baseline_pred),
+                "best_params": "default_parameters",
+            }
+        )
+        baseline_predictions[model_name] = baseline_pred
+
         search = GridSearchCV(
             estimator=estimator,
             param_grid=param_grid,
-            cv=cv,
+            cv=3,
             scoring="neg_mean_squared_error",
             n_jobs=1,
             verbose=0,
@@ -148,7 +176,7 @@ def train_and_evaluate_models(
         mse = mean_squared_error(y_test, predictions)
         r2 = r2_score(y_test, predictions)
 
-        results.append(
+        tuned_results.append(
             {
                 "model": model_name,
                 "status": "trained",
@@ -158,49 +186,87 @@ def train_and_evaluate_models(
             }
         )
         fitted_models[model_name] = best_model
+        tuned_predictions[model_name] = pd.Series(predictions)
 
-        _save_prediction_plot(
-            model_name=model_name,
-            y_true=y_test.reset_index(drop=True),
-            y_pred=pd.Series(predictions),
-        )
+        _save_prediction_plot(stage="after_tuning", model_name=model_name, y_true=y_test.reset_index(drop=True), y_pred=pd.Series(predictions))
         _save_feature_importance_plot(model_name=model_name, model=best_model)
 
     if not fitted_models:
         raise RuntimeError("No model could be trained in the current environment.")
 
-    comparison = pd.DataFrame(results)
+    baseline_comparison = _sort_comparison_rows(pd.DataFrame(baseline_results))
+    comparison = _sort_comparison_rows(pd.DataFrame(tuned_results))
+    baseline_reports_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_comparison.to_csv(baseline_reports_path, index=False)
+    reports_path.parent.mkdir(parents=True, exist_ok=True)
+    comparison.to_csv(reports_path, index=False)
+
     trained_rows = comparison[comparison["status"] == "trained"].sort_values(
         ["mse", "r2"],
         ascending=[True, False],
     )
-    unavailable_rows = comparison[comparison["status"] == "unavailable"]
-    comparison = pd.concat([trained_rows, unavailable_rows], ignore_index=True)
-    reports_path.parent.mkdir(parents=True, exist_ok=True)
-    comparison.to_csv(reports_path, index=False)
 
     best_model_name = trained_rows.iloc[0]["model"]
     best_model = fitted_models[best_model_name]
     _save_best_model(best_model_name, best_model, trained_rows.iloc[0].to_dict())
+    _save_combined_prediction_plot(
+        stage="before_tuning",
+        y_true=y_test.reset_index(drop=True),
+        predictions=baseline_predictions,
+    )
+    _save_combined_prediction_plot(
+        stage="after_tuning",
+        y_true=y_test.reset_index(drop=True),
+        predictions=tuned_predictions,
+    )
 
     return ModelingArtifacts(
+        baseline_comparison=baseline_comparison,
         comparison=comparison,
         best_model_name=best_model_name,
         best_model=best_model,
     )
 
 
-def _save_prediction_plot(model_name: str, y_true: pd.Series, y_pred: pd.Series) -> None:
+def _sort_comparison_rows(comparison: pd.DataFrame) -> pd.DataFrame:
+    trained_rows = comparison[comparison["status"] == "trained"].sort_values(
+        ["mse", "r2"],
+        ascending=[True, False],
+    )
+    unavailable_rows = comparison[comparison["status"] == "unavailable"]
+    return pd.concat([trained_rows, unavailable_rows], ignore_index=True)
+
+
+def _save_prediction_plot(stage: str, model_name: str, y_true: pd.Series, y_pred: pd.Series) -> None:
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(12, 5))
     ax.plot(y_true.index, y_true.values, label="Actual", linewidth=1.5)
     ax.plot(y_pred.index, y_pred.values, label="Predicted", linewidth=1.5)
-    ax.set_title(f"Actual vs Predicted Rainfall - {model_name}")
+    ax.set_title(f"Actual vs Predicted Rainfall - {model_name} - {stage.replace('_', ' ').title()}")
     ax.set_xlabel("Test Sample")
     ax.set_ylabel("Precipitation")
     ax.legend()
     fig.tight_layout()
-    fig.savefig(FIGURES_DIR / f"{model_name}_predictions.png", dpi=200)
+    fig.savefig(FIGURES_DIR / f"{stage}_{model_name}_predictions.png", dpi=200)
+    plt.close(fig)
+
+
+def _save_combined_prediction_plot(stage: str, y_true: pd.Series, predictions: dict[str, pd.Series]) -> None:
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    model_names = list(predictions.keys())
+    fig, axes = plt.subplots(len(model_names), 1, figsize=(12, 4 * len(model_names)), sharex=True)
+    if len(model_names) == 1:
+        axes = [axes]
+    for idx, model_name in enumerate(model_names):
+        axes[idx].plot(y_true.index, y_true.values, label="Actual", linewidth=1.4)
+        axes[idx].plot(predictions[model_name].index, predictions[model_name].values, label="Predicted", linewidth=1.4)
+        axes[idx].set_title(model_name)
+        axes[idx].set_ylabel("Precipitation")
+        axes[idx].legend()
+    axes[-1].set_xlabel("Test Sample")
+    fig.suptitle(f"Prediction on Testing Dataset - {stage.replace('_', ' ').title()}", y=1.01)
+    fig.tight_layout()
+    fig.savefig(FIGURES_DIR / f"{stage}_prediction_comparison.png", dpi=200)
     plt.close(fig)
 
 

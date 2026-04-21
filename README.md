@@ -76,10 +76,12 @@ This will:
 2. Clean and preprocess it
 3. Save the processed dataset to `data/processed/weather_processed.csv`
 4. Generate EDA charts in `reports/figures/`
-5. Tune and train XGBoost, LightGBM, and CatBoost
-6. Evaluate them on a temporal test split
-7. Save model metrics to `reports/model_comparison.csv`
-8. Save the best model to `models/best_model.joblib`
+5. Train baseline XGBoost, LightGBM, and CatBoost models
+6. Tune all three models with thesis-aligned `GridSearchCV` search spaces
+7. Evaluate them on the thesis temporal split
+8. Save before-tuning metrics to `reports/baseline_model_comparison.csv`
+9. Save after-tuning metrics to `reports/model_comparison.csv`
+10. Save the best model to `models/best_model.joblib`
 
 ## Prediction
 
@@ -102,5 +104,7 @@ rainfall-predictor predict \
 - Temporal split:
   - Training: dates before `2024-01-01`
   - Testing: dates on or after `2024-01-01`
-- Hyperparameter tuning uses `GridSearchCV` with `TimeSeriesSplit` to respect the time order within the training set.
+- The implementation now mirrors the thesis more closely by producing both before-tuning and after-tuning model comparisons.
+- Hyperparameter tuning uses `GridSearchCV` with 3-fold cross-validation, as described in the thesis.
+- The EDA output includes `time_series_all_variables.png`, matching the thesis figure description more closely than a rainfall-only time series.
 - On macOS, the project installs a user-space `libomp` runtime and preloads it automatically before importing XGBoost or LightGBM. This avoids the common Apple Silicon vs Intel Homebrew mismatch.

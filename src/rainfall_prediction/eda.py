@@ -19,14 +19,19 @@ def generate_eda_reports(df: pd.DataFrame, output_dir: Path = FIGURES_DIR) -> No
 
     numeric_df = df.select_dtypes(include="number")
 
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(df[DATE_COLUMN], df[TARGET_COLUMN], color="#1f77b4", linewidth=1.5)
-    ax.set_title("Rainfall Time Series")
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Precipitation")
+    time_series_columns = list(numeric_df.columns)
+    fig, axes = plt.subplots(len(time_series_columns), 1, figsize=(14, 2.8 * len(time_series_columns)), sharex=True)
+    if len(time_series_columns) == 1:
+        axes = [axes]
+    for idx, column in enumerate(time_series_columns):
+        axes[idx].plot(df[DATE_COLUMN], df[column], color="#1f77b4", linewidth=1.1)
+        axes[idx].set_title(column.replace("_", " ").title())
+        axes[idx].set_ylabel(column)
+    axes[-1].set_xlabel("Date")
+    fig.suptitle("Time Series of All Variables", y=1.01)
     fig.autofmt_xdate()
     fig.tight_layout()
-    fig.savefig(output_dir / "rainfall_time_series.png", dpi=200)
+    fig.savefig(output_dir / "time_series_all_variables.png", dpi=200)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(10, 6))

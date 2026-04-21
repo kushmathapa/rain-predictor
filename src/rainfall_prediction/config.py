@@ -11,6 +11,7 @@ PROCESSED_DATA_PATH = DATA_DIR / "processed" / "weather_processed.csv"
 REPORTS_DIR = PROJECT_ROOT / "reports"
 FIGURES_DIR = REPORTS_DIR / "figures"
 MODELS_DIR = PROJECT_ROOT / "models"
+BASELINE_MODEL_COMPARISON_PATH = REPORTS_DIR / "baseline_model_comparison.csv"
 MODEL_COMPARISON_PATH = REPORTS_DIR / "model_comparison.csv"
 BEST_MODEL_PATH = MODELS_DIR / "best_model.joblib"
 BEST_MODEL_INFO_PATH = MODELS_DIR / "best_model_metadata.json"
@@ -41,4 +42,3 @@ COLUMN_MAPPING = {
 @dataclass(frozen=True)
 class SplitConfig:
     test_start_date: str = "2024-01-01"
-

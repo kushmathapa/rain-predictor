@@ -34,7 +34,9 @@ def main() -> None:
 
     if args.command == "run-all":
         artifacts = run_full_pipeline(generate_eda=not args.skip_eda)
-        print("Model comparison:")
+        print("Model comparison before hyperparameter tuning:")
+        print(artifacts.baseline_comparison.to_string(index=False))
+        print("\nModel comparison after hyperparameter tuning:")
         print(artifacts.comparison.to_string(index=False))
         print(f"\nBest model: {artifacts.best_model_name}")
         return
