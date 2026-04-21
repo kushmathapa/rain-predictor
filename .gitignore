@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+*.egg-info/
+reports/figures/
+reports/*.csv
+reports/*.json
+models/*.joblib
+models/*.json
+data/processed/*.csv
