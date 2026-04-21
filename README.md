@@ -1,6 +1,6 @@
 # Rainfall Prediction With Gradient Boosting Models
 
-This project implements the thesis workflow for Kathmandu rainfall prediction:
+This project implements a rainfall prediction workflow for Kathmandu weather data:
 
 `Data -> Preprocessing -> EDA -> Train Models -> Hyperparameter Tuning -> Evaluation -> Prediction`
 
@@ -77,8 +77,8 @@ This will:
 3. Save the processed dataset to `data/processed/weather_processed.csv`
 4. Generate EDA charts in `reports/figures/`
 5. Train baseline XGBoost, LightGBM, and CatBoost models
-6. Tune all three models with thesis-aligned `GridSearchCV` search spaces
-7. Evaluate them on the thesis temporal split
+6. Tune all three models with `GridSearchCV` search spaces
+7. Evaluate them on the temporal split
 8. Save before-tuning metrics to `reports/baseline_model_comparison.csv`
 9. Save after-tuning metrics to `reports/model_comparison.csv`
 10. Save the best model to `models/best_model.joblib`
@@ -99,12 +99,12 @@ rainfall-predictor predict \
 
 ## Notes
 
-- The code uses mean imputation for missing feature values, matching the thesis direction.
+- The code uses mean imputation for missing feature values.
 - Rows with missing `date` or `precipitation` are dropped because they cannot be used for temporal modeling.
 - Temporal split:
   - Training: dates before `2024-01-01`
   - Testing: dates on or after `2024-01-01`
-- The implementation now mirrors the thesis more closely by producing both before-tuning and after-tuning model comparisons.
-- Hyperparameter tuning uses `GridSearchCV` with 3-fold cross-validation, as described in the thesis.
-- The EDA output includes `time_series_all_variables.png`, matching the thesis figure description more closely than a rainfall-only time series.
+- The implementation produces both before-tuning and after-tuning model comparisons.
+- Hyperparameter tuning uses `GridSearchCV` with 3-fold cross-validation.
+- The EDA output includes `time_series_all_variables.png` in addition to a rainfall-only time series.
 - On macOS, the project installs a user-space `libomp` runtime and preloads it automatically before importing XGBoost or LightGBM. This avoids the common Apple Silicon vs Intel Homebrew mismatch.
