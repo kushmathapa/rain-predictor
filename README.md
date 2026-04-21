@@ -103,4 +103,4 @@ rainfall-predictor predict \
   - Training: dates before `2024-01-01`
   - Testing: dates on or after `2024-01-01`
 - Hyperparameter tuning uses `GridSearchCV` with `TimeSeriesSplit` to respect the time order within the training set.
-- On macOS, both XGBoost and LightGBM may require an architecture-compatible `libomp` runtime. If either cannot be loaded, the pipeline will continue with the remaining models and mark the unavailable ones in the comparison report.
+- On macOS, the project installs a user-space `libomp` runtime and preloads it automatically before importing XGBoost or LightGBM. This avoids the common Apple Silicon vs Intel Homebrew mismatch.

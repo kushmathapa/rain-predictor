@@ -21,10 +21,13 @@ from rainfall_prediction.config import (
     MODEL_COMPARISON_PATH,
     TARGET_COLUMN,
 )
+from rainfall_prediction.runtime import bootstrap_openmp_runtime
 
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+bootstrap_openmp_runtime()
 
 
 @dataclass
