@@ -18,12 +18,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     predict = subparsers.add_parser("predict", help="Predict rainfall using the saved best model.")
+    predict.add_argument(
+        "--date",
+        type=str,
+        required=True,
+        help="Observation date in YYYY-MM-DD format (used to derive seasonality features).",
+    )
     predict.add_argument("--max-temp", type=float, required=True)
     predict.add_argument("--min-temp", type=float, required=True)
     predict.add_argument("--rel-humidity", type=float, required=True)
     predict.add_argument("--pressure", type=float, required=True)
     predict.add_argument("--wind-direction", type=float, required=True)
     predict.add_argument("--wind-speed", type=float, required=True)
+    predict.add_argument(
+        "--precip-lag1",
+        type=float,
+        default=None,
+        help="Previous observation precipitation (t-1). Optional; if omitted the model will impute.",
+    )
+    predict.add_argument(
+        "--precip-lag2",
+        type=float,
+        default=None,
+        help="Precipitation lag (t-2). Optional; if omitted the model will impute.",
+    )
+    predict.add_argument(
+        "--precip-lag3",
+        type=float,
+        default=None,
+        help="Precipitation lag (t-3). Optional; if omitted the model will impute.",
+    )
 
     return parser
 
@@ -38,18 +62,22 @@ def main() -> None:
         print(artifacts.baseline_comparison.to_string(index=False))
         print("\nModel comparison after hyperparameter tuning:")
         print(artifacts.comparison.to_string(index=False))
-        print(f"\nBest model: {artifacts.best_model_name}")
+        print(f"\nBest model: {artifacts.best_model_name} ({artifacts.best_model_stage})")
         return
 
     if args.command == "predict":
         model = load_best_model()
         features = build_prediction_frame(
+            date=args.date,
             max_temp=args.max_temp,
             min_temp=args.min_temp,
             rel_humidity=args.rel_humidity,
             pressure=args.pressure,
             wind_direction=args.wind_direction,
             wind_speed=args.wind_speed,
+            precip_lag1=args.precip_lag1,
+            precip_lag2=args.precip_lag2,
+            precip_lag3=args.precip_lag3,
         )
         prediction = model.predict(features)[0]
         print(f"Predicted rainfall: {prediction:.4f}")

@@ -10,8 +10,11 @@ import matplotlib
 import pandas as pd
 from catboost import CatBoostRegressor
 from sklearn.base import clone
-from sklearn.metrics import mean_squared_error, r2_score
-from sklearn.model_selection import GridSearchCV
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
+from sklearn.pipeline import Pipeline
 
 from rainfall_prediction.config import (
     BASELINE_MODEL_COMPARISON_PATH,
@@ -37,6 +40,7 @@ class ModelingArtifacts:
     baseline_comparison: pd.DataFrame
     comparison: pd.DataFrame
     best_model_name: str
+    best_model_stage: str
     best_model: Any
 
 
@@ -48,8 +52,29 @@ def split_train_test(df: pd.DataFrame, test_start_date: str) -> tuple[pd.DataFra
     return train, test
 
 
-def _build_model_specs() -> dict[str, tuple[Any, dict[str, list[Any]]]]:
+def _make_model_pipeline(estimator: Any) -> Pipeline:
+    # Fit the imputer on TRAIN ONLY (via the pipeline) to avoid leakage.
+    imputer = SimpleImputer(strategy="mean")
+    # Keep pandas feature names through the pipeline so downstream estimators
+    # (notably LightGBM) don't warn about missing feature names.
+    if hasattr(imputer, "set_output"):
+        imputer.set_output(transform="pandas")
+    return Pipeline(
+        steps=[
+            ("imputer", imputer),
+            ("model", estimator),
+        ]
+    )
+
+
+def _build_model_specs() -> tuple[dict[str, tuple[Any, dict[str, list[Any]]]], dict[str, str]]:
     spaces: dict[str, tuple[Any, dict[str, list[Any]]]] = {
+        "linear_regression": (
+            LinearRegression(),
+            {
+                "fit_intercept": [True, False],
+            },
+        ),
         "catboost": (
             CatBoostRegressor(random_state=42, verbose=0),
             {
@@ -97,10 +122,14 @@ def _build_model_specs() -> dict[str, tuple[Any, dict[str, list[Any]]]]:
     except Exception as exc:
         unavailable_models["lightgbm"] = str(exc)
 
-    ordered_spaces = {name: spaces[name] for name in ["xgboost", "lightgbm", "catboost"] if name in spaces}
+    ordered_spaces = {
+        name: spaces[name]
+        for name in ["linear_regression", "xgboost", "lightgbm", "catboost"]
+        if name in spaces
+    }
     ordered_unavailable = {
         name: unavailable_models[name]
-        for name in ["xgboost", "lightgbm", "catboost"]
+        for name in ["linear_regression", "xgboost", "lightgbm", "catboost"]
         if name in unavailable_models
     }
 
@@ -112,6 +141,7 @@ def train_and_evaluate_models(
     test_start_date: str,
     baseline_reports_path: Path = BASELINE_MODEL_COMPARISON_PATH,
     reports_path: Path = MODEL_COMPARISON_PATH,
+    model_names: list[str] | None = None,
 ) -> ModelingArtifacts:
     train_df, test_df = split_train_test(df, test_start_date=test_start_date)
     x_train = train_df[FEATURE_COLUMNS]
@@ -121,10 +151,16 @@ def train_and_evaluate_models(
 
     baseline_results: list[dict[str, Any]] = []
     tuned_results: list[dict[str, Any]] = []
-    fitted_models: dict[str, Any] = {}
+    baseline_fitted_models: dict[str, Any] = {}
+    tuned_fitted_models: dict[str, Any] = {}
     baseline_predictions: dict[str, pd.Series] = {}
     tuned_predictions: dict[str, pd.Series] = {}
     model_specs, unavailable_models = _build_model_specs()
+    if model_names is not None:
+        wanted = set(model_names)
+        model_specs = {name: spec for name, spec in model_specs.items() if name in wanted}
+        unavailable_models = {name: msg for name, msg in unavailable_models.items() if name in wanted}
+    tscv = TimeSeriesSplit(n_splits=3)
 
     for model_name, error_message in unavailable_models.items():
         baseline_results.append(
@@ -133,6 +169,7 @@ def train_and_evaluate_models(
                 "status": "unavailable",
                 "mse": None,
                 "r2": None,
+                "mae": None,
                 "best_params": error_message,
             }
         )
@@ -142,12 +179,13 @@ def train_and_evaluate_models(
                 "status": "unavailable",
                 "mse": None,
                 "r2": None,
+                "mae": None,
                 "best_params": error_message,
             }
         )
 
     for model_name, (estimator, param_grid) in model_specs.items():
-        baseline_model = clone(estimator)
+        baseline_model = _make_model_pipeline(clone(estimator))
         baseline_model.fit(x_train, y_train)
         baseline_pred = pd.Series(baseline_model.predict(x_test))
         baseline_results.append(
@@ -156,15 +194,18 @@ def train_and_evaluate_models(
                 "status": "trained",
                 "mse": mean_squared_error(y_test, baseline_pred),
                 "r2": r2_score(y_test, baseline_pred),
+                "mae": mean_absolute_error(y_test, baseline_pred),
                 "best_params": "default_parameters",
             }
         )
         baseline_predictions[model_name] = baseline_pred
+        baseline_fitted_models[model_name] = baseline_model
 
+        search_estimator = _make_model_pipeline(clone(estimator))
         search = GridSearchCV(
-            estimator=estimator,
-            param_grid=param_grid,
-            cv=3,
+            estimator=search_estimator,
+            param_grid={f"model__{k}": v for k, v in param_grid.items()},
+            cv=tscv,
             scoring="neg_mean_squared_error",
             n_jobs=1,
             verbose=0,
@@ -175,6 +216,8 @@ def train_and_evaluate_models(
 
         mse = mean_squared_error(y_test, predictions)
         r2 = r2_score(y_test, predictions)
+        mae = mean_absolute_error(y_test, predictions)
+        cleaned_best_params = {k.removeprefix("model__"): v for k, v in search.best_params_.items()}
 
         tuned_results.append(
             {
@@ -182,16 +225,17 @@ def train_and_evaluate_models(
                 "status": "trained",
                 "mse": mse,
                 "r2": r2,
-                "best_params": json.dumps(search.best_params_),
+                "mae": mae,
+                "best_params": json.dumps(cleaned_best_params),
             }
         )
-        fitted_models[model_name] = best_model
+        tuned_fitted_models[model_name] = best_model
         tuned_predictions[model_name] = pd.Series(predictions)
 
         _save_prediction_plot(stage="after_tuning", model_name=model_name, y_true=y_test.reset_index(drop=True), y_pred=pd.Series(predictions))
         _save_feature_importance_plot(model_name=model_name, model=best_model)
 
-    if not fitted_models:
+    if not (baseline_fitted_models or tuned_fitted_models):
         raise RuntimeError("No model could be trained in the current environment.")
 
     baseline_comparison = _sort_comparison_rows(pd.DataFrame(baseline_results))
@@ -201,14 +245,46 @@ def train_and_evaluate_models(
     reports_path.parent.mkdir(parents=True, exist_ok=True)
     comparison.to_csv(reports_path, index=False)
 
-    trained_rows = comparison[comparison["status"] == "trained"].sort_values(
+    baseline_trained = baseline_comparison[baseline_comparison["status"] == "trained"].sort_values(
+        ["mse", "r2"],
+        ascending=[True, False],
+    )
+    tuned_trained = comparison[comparison["status"] == "trained"].sort_values(
         ["mse", "r2"],
         ascending=[True, False],
     )
 
-    best_model_name = trained_rows.iloc[0]["model"]
-    best_model = fitted_models[best_model_name]
-    _save_best_model(best_model_name, best_model, trained_rows.iloc[0].to_dict())
+    best_baseline_row = baseline_trained.iloc[0] if not baseline_trained.empty else None
+    best_tuned_row = tuned_trained.iloc[0] if not tuned_trained.empty else None
+
+    best_stage: str
+    if best_baseline_row is not None and best_tuned_row is not None:
+        baseline_key = (float(best_baseline_row["mse"]), -float(best_baseline_row["r2"]))
+        tuned_key = (float(best_tuned_row["mse"]), -float(best_tuned_row["r2"]))
+        if baseline_key <= tuned_key:
+            best_stage = "baseline"
+            best_row = best_baseline_row
+            best_model_name = str(best_row["model"])
+            best_model = baseline_fitted_models[best_model_name]
+        else:
+            best_stage = "tuned"
+            best_row = best_tuned_row
+            best_model_name = str(best_row["model"])
+            best_model = tuned_fitted_models[best_model_name]
+    elif best_baseline_row is not None:
+        best_stage = "baseline"
+        best_row = best_baseline_row
+        best_model_name = str(best_row["model"])
+        best_model = baseline_fitted_models[best_model_name]
+    elif best_tuned_row is not None:
+        best_stage = "tuned"
+        best_row = best_tuned_row
+        best_model_name = str(best_row["model"])
+        best_model = tuned_fitted_models[best_model_name]
+    else:
+        raise RuntimeError("No trained model rows found.")
+
+    _save_best_model(best_model_name, best_model, best_row.to_dict(), stage=best_stage)
     _save_combined_prediction_plot(
         stage="before_tuning",
         y_true=y_test.reset_index(drop=True),
@@ -224,6 +300,7 @@ def train_and_evaluate_models(
         baseline_comparison=baseline_comparison,
         comparison=comparison,
         best_model_name=best_model_name,
+        best_model_stage=best_stage,
         best_model=best_model,
     )
 
@@ -271,7 +348,11 @@ def _save_combined_prediction_plot(stage: str, y_true: pd.Series, predictions: d
 
 
 def _save_feature_importance_plot(model_name: str, model: Any) -> None:
-    importances = getattr(model, "feature_importances_", None)
+    candidate = model
+    if hasattr(model, "named_steps"):
+        candidate = model.named_steps.get("model", model)
+
+    importances = getattr(candidate, "feature_importances_", None)
     if importances is None:
         return
 
@@ -286,15 +367,17 @@ def _save_feature_importance_plot(model_name: str, model: Any) -> None:
     plt.close(fig)
 
 
-def _save_best_model(best_model_name: str, best_model: Any, best_row: dict[str, Any]) -> None:
+def _save_best_model(best_model_name: str, best_model: Any, best_row: dict[str, Any], stage: str) -> None:
     BEST_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(best_model, BEST_MODEL_PATH)
     metadata = {
         "model": best_model_name,
+        "stage": stage,
         "features": FEATURE_COLUMNS,
         "metrics": {
             "mse": float(best_row["mse"]),
             "r2": float(best_row["r2"]),
+            "mae": float(best_row["mae"]),
         },
         "best_params": best_row["best_params"],
     }

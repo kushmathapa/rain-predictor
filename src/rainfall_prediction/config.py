@@ -25,6 +25,11 @@ FEATURE_COLUMNS = [
     "pressure",
     "wind_direction",
     "wind_speed",
+    "month",
+    "day_of_year",
+    "precip_lag1",
+    "precip_lag2",
+    "precip_lag3",
 ]
 
 COLUMN_MAPPING = {

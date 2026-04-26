@@ -21,13 +21,18 @@ def run_full_pipeline(generate_eda: bool = True) -> ModelingArtifacts:
 
 
 def build_prediction_frame(
+    date: str,
     max_temp: float,
     min_temp: float,
     rel_humidity: float,
     pressure: float,
     wind_direction: float,
     wind_speed: float,
+    precip_lag1: float | None = None,
+    precip_lag2: float | None = None,
+    precip_lag3: float | None = None,
 ) -> pd.DataFrame:
+    parsed_date = pd.to_datetime(date)
     return pd.DataFrame(
         [
             {
@@ -37,6 +42,11 @@ def build_prediction_frame(
                 "pressure": pressure,
                 "wind_direction": wind_direction,
                 "wind_speed": wind_speed,
+                "month": int(parsed_date.month),
+                "day_of_year": int(parsed_date.dayofyear),
+                "precip_lag1": precip_lag1,
+                "precip_lag2": precip_lag2,
+                "precip_lag3": precip_lag3,
             }
         ],
         columns=FEATURE_COLUMNS,
